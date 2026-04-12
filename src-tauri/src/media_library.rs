@@ -74,6 +74,7 @@ pub struct ImportResult {
 pub struct AppSettings {
     pub lock_enabled: bool,
     pub pause_on_blur: bool,
+    pub lock_on_blur: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -81,6 +82,7 @@ pub struct AppSettings {
 pub struct UpdateAppSettingsPayload {
     pub lock_enabled: Option<bool>,
     pub pause_on_blur: Option<bool>,
+    pub lock_on_blur: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -149,10 +151,39 @@ impl MediaLibrary {
                     password_salt TEXT,
                     updated_at INTEGER NOT NULL
                 );
-
-                INSERT OR IGNORE INTO app_settings (id, pause_on_blur, lock_enabled, password_hash, password_salt, updated_at)
-                VALUES (1, 0, 0, NULL, NULL, 0);
                 ",
+            )
+            .map_err(|err| err.to_string())?;
+
+        let mut table_info = connection
+            .prepare("PRAGMA table_info(app_settings)")
+            .map_err(|err| err.to_string())?;
+        let columns = table_info
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|err| err.to_string())?;
+        let mut has_lock_on_blur = false;
+        for column in columns {
+            if column.map_err(|err| err.to_string())? == "lock_on_blur" {
+                has_lock_on_blur = true;
+                break;
+            }
+        }
+        if !has_lock_on_blur {
+            connection
+                .execute(
+                    "ALTER TABLE app_settings ADD COLUMN lock_on_blur INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )
+                .map_err(|err| err.to_string())?;
+        }
+
+        connection
+            .execute(
+                "
+                INSERT OR IGNORE INTO app_settings (id, pause_on_blur, lock_on_blur, lock_enabled, password_hash, password_salt, updated_at)
+                VALUES (1, 0, 0, 0, NULL, NULL, 0)
+                ",
+                [],
             )
             .map_err(|err| err.to_string())?;
 
@@ -471,19 +502,29 @@ impl MediaLibrary {
         let current = self.load_settings_row(&connection)?;
         let lock_enabled = payload.lock_enabled.unwrap_or(current.lock_enabled);
         let pause_on_blur = payload.pause_on_blur.unwrap_or(current.pause_on_blur);
+        let lock_on_blur = payload.lock_on_blur.unwrap_or(current.lock_on_blur);
 
         if lock_enabled && current.password_hash.is_none() {
             return Err("password lock requires a password".into());
+        }
+
+        if lock_on_blur && !lock_enabled {
+            return Err("blur lock requires password lock to be enabled".into());
         }
 
         connection
             .execute(
                 "
                 UPDATE app_settings
-                SET lock_enabled = ?1, pause_on_blur = ?2, updated_at = ?3
+                SET lock_enabled = ?1, pause_on_blur = ?2, lock_on_blur = ?3, updated_at = ?4
                 WHERE id = 1
                 ",
-                params![lock_enabled as i64, pause_on_blur as i64, now_ts()],
+                params![
+                    lock_enabled as i64,
+                    pause_on_blur as i64,
+                    lock_on_blur as i64,
+                    now_ts()
+                ],
             )
             .map_err(|err| err.to_string())?;
 
@@ -544,7 +585,7 @@ impl MediaLibrary {
             .execute(
                 "
                 UPDATE app_settings
-                SET lock_enabled = 0, updated_at = ?1
+                SET lock_enabled = 0, lock_on_blur = 0, updated_at = ?1
                 WHERE id = 1
                 ",
                 params![now_ts()],
@@ -573,7 +614,11 @@ impl MediaLibrary {
     }
 
     fn open_connection(&self) -> Result<Connection, String> {
-        Connection::open(self.db_path()).map_err(|err| err.to_string())
+        let connection = Connection::open(self.db_path()).map_err(|err| err.to_string())?;
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .map_err(|err| err.to_string())?;
+        Ok(connection)
     }
 
     fn get_video(&self, connection: &Connection, video_id: &str) -> Result<VideoListItem, String> {
@@ -644,6 +689,7 @@ impl MediaLibrary {
         Ok(AppSettings {
             lock_enabled: row.lock_enabled,
             pause_on_blur: row.pause_on_blur,
+            lock_on_blur: row.lock_on_blur,
         })
     }
 
@@ -651,7 +697,7 @@ impl MediaLibrary {
         connection
             .query_row(
                 "
-                SELECT pause_on_blur, lock_enabled, password_hash, password_salt, updated_at
+                SELECT pause_on_blur, lock_on_blur, lock_enabled, password_hash, password_salt, updated_at
                 FROM app_settings
                 WHERE id = 1
                 ",
@@ -659,9 +705,10 @@ impl MediaLibrary {
                 |row| {
                     Ok(StoredSettingsRow {
                         pause_on_blur: row.get::<_, i64>(0)? == 1,
-                        lock_enabled: row.get::<_, i64>(1)? == 1,
-                        password_hash: row.get(2)?,
-                        password_salt: row.get(3)?,
+                        lock_on_blur: row.get::<_, i64>(1)? == 1,
+                        lock_enabled: row.get::<_, i64>(2)? == 1,
+                        password_hash: row.get(3)?,
+                        password_salt: row.get(4)?,
                     })
                 },
             )
@@ -674,6 +721,7 @@ impl MediaLibrary {
 #[derive(Debug)]
 struct StoredSettingsRow {
     pause_on_blur: bool,
+    lock_on_blur: bool,
     lock_enabled: bool,
     password_hash: Option<String>,
     password_salt: Option<String>,
@@ -825,6 +873,7 @@ fn verify_password_against_settings(
 #[cfg(test)]
 mod tests {
     use super::{MediaLibrary, UpdateAppSettingsPayload, UpdateVideoPayload};
+    use rusqlite::Connection;
     use std::{fs, path::PathBuf};
     use tempfile::TempDir;
 
@@ -988,6 +1037,42 @@ mod tests {
 
         assert!(!settings.lock_enabled);
         assert!(!settings.pause_on_blur);
+        assert!(!settings.lock_on_blur);
+    }
+
+    #[test]
+    fn init_migrates_existing_settings_table_without_lock_on_blur() {
+        let temp = TempDir::new().expect("temp dir");
+        let library_root = temp.path().join("library");
+        fs::create_dir_all(&library_root).expect("create library root");
+        let connection = Connection::open(library_root.join("app.db")).expect("open db");
+
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE app_settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    pause_on_blur INTEGER NOT NULL DEFAULT 0,
+                    lock_enabled INTEGER NOT NULL DEFAULT 0,
+                    password_hash TEXT,
+                    password_salt TEXT,
+                    updated_at INTEGER NOT NULL
+                );
+
+                INSERT INTO app_settings (id, pause_on_blur, lock_enabled, password_hash, password_salt, updated_at)
+                VALUES (1, 1, 1, NULL, NULL, 0);
+                ",
+            )
+            .expect("seed old schema");
+        drop(connection);
+
+        let library = MediaLibrary::new(library_root);
+        library.init().expect("migrate library");
+
+        let settings = library.get_app_settings().expect("get settings");
+        assert!(settings.pause_on_blur);
+        assert!(settings.lock_enabled);
+        assert!(!settings.lock_on_blur);
     }
 
     #[test]
@@ -1014,6 +1099,7 @@ mod tests {
             .update_app_settings(UpdateAppSettingsPayload {
                 lock_enabled: Some(true),
                 pause_on_blur: None,
+                lock_on_blur: None,
             })
             .expect_err("should reject lock without password");
 
@@ -1033,6 +1119,7 @@ mod tests {
             .update_app_settings(UpdateAppSettingsPayload {
                 lock_enabled: Some(true),
                 pause_on_blur: Some(true),
+                lock_on_blur: Some(false),
             })
             .expect("update settings");
         assert!(settings.pause_on_blur);
@@ -1042,5 +1129,26 @@ mod tests {
             .disable_lock_password("1234")
             .expect("disable lock");
         assert!(!disabled.lock_enabled);
+    }
+
+    #[test]
+    fn can_update_lock_on_blur_with_existing_password() {
+        let temp = TempDir::new().expect("temp dir");
+        let library = MediaLibrary::new(temp.path().join("library"));
+        library.init().expect("init library");
+        library
+            .set_lock_password("1234")
+            .expect("set lock password");
+
+        let settings = library
+            .update_app_settings(UpdateAppSettingsPayload {
+                lock_enabled: Some(true),
+                pause_on_blur: Some(false),
+                lock_on_blur: Some(true),
+            })
+            .expect("update settings");
+
+        assert!(settings.lock_enabled);
+        assert!(settings.lock_on_blur);
     }
 }

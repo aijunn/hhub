@@ -10,6 +10,7 @@ import {
   setVideoTags,
   updateVideoMeta,
 } from "../lib/api";
+import { resolveLibrarySelection } from "../lib/library-selection";
 import type { PlaybackInfo, TagItem, VideoFilter, VideoItem } from "../lib/types";
 
 type LibraryState = {
@@ -63,14 +64,10 @@ export const useLibraryStore = defineStore("library", {
     },
 
     ensureSelection() {
-      if (!this.selectedVideoId && this.videos.length > 0) {
-        this.selectedVideoId = this.videos[0].id;
-        return;
-      }
-
-      if (this.selectedVideoId && !this.videos.some((video) => video.id === this.selectedVideoId)) {
-        this.selectedVideoId = this.videos[0]?.id ?? null;
-      }
+      this.selectedVideoId = resolveLibrarySelection(
+        this.selectedVideoId,
+        this.videos.map((video) => video.id),
+      );
     },
 
     async refreshVideos(filter?: VideoFilter) {
@@ -162,8 +159,10 @@ export const useLibraryStore = defineStore("library", {
         await deleteTag(id);
         await this.refreshTags();
         await this.refreshVideos();
+        return true;
       } catch (error) {
         this.setError(error);
+        return false;
       }
     },
 

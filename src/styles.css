@@ -361,6 +361,7 @@ select {
 .mac-row {
   display: flex;
   align-items: center;
+  min-width: 0;
   width: 100%;
   border: 1px solid var(--hairline);
   background: transparent;
@@ -369,6 +370,10 @@ select {
   padding: 0.9rem 1rem;
   text-align: left;
   cursor: pointer;
+}
+
+.mac-row__meta {
+  min-width: fit-content;
 }
 
 .mac-row:hover {
@@ -432,9 +437,31 @@ select {
   height: 22px;
   border: 1px solid var(--tag-border, var(--hairline));
   border-radius: 999px;
-  background: color-mix(in srgb, var(--tag-bg, var(--surface)) 82%, transparent);
+  background: var(--surface);
   color: var(--tag-text, var(--text-secondary));
   cursor: pointer;
+}
+
+.tag-chip-group--sidebar {
+  position: relative;
+}
+
+.tag-chip-group--sidebar .tag-chip-group__delete {
+  position: absolute;
+  top: -0.5rem;
+  right: -0.15rem;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(0.25rem) scale(0.88);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.18);
+  transition: opacity 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+}
+
+.tag-chip-group--sidebar:hover .tag-chip-group__delete,
+.tag-chip-group--sidebar:focus-within .tag-chip-group__delete {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
 }
 
 .mac-chip--tag {

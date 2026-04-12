@@ -3,7 +3,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
-  Check,
+  FolderOpen,
   Maximize,
   Minimize,
   PanelLeftClose,
@@ -72,7 +72,7 @@ const SIDEBAR_COLLAPSED_KEY = "hhub.sidebar-collapsed";
 const THEME_PREFERENCE_KEY = "hhub.theme-preference";
 const DEFAULT_PREVIEW_WIDTH = 408;
 const MIN_PREVIEW_WIDTH = 320;
-const MAX_PREVIEW_WIDTH = 620;
+const MAX_PREVIEW_WIDTH = 900;
 const DELETE_UNDO_MS = 5000;
 
 type ThemeMode = "light" | "dark";
@@ -111,6 +111,7 @@ const normalVideoRef = ref<HTMLVideoElement | null>(null);
 const theaterVideoRef = ref<HTMLVideoElement | null>(null);
 const searchInputRef = ref<HTMLInputElement | null>(null);
 const renameInputRef = ref<HTMLInputElement | null>(null);
+const unlockInputRef = ref<HTMLInputElement | null>(null);
 const pendingResumeTime = ref<number | null>(null);
 const pendingAutoPlay = ref(false);
 const playbackIntent = ref<"idle" | "play">("idle");
@@ -120,6 +121,7 @@ const pendingDeleteId = ref<string | null>(null);
 const settingsForms = reactive({
   lockToggle: false,
   pauseOnBlur: false,
+  lockOnBlur: false,
   newPassword: "",
   confirmPassword: "",
   currentPassword: "",
@@ -152,11 +154,13 @@ let removeFocusChangeListener: (() => void) | null = null;
 let resizingCleanup: (() => void) | null = null;
 
 const pendingDeleteBanner = computed(() =>
-  pendingDeleteId.value ? (pendingDeletes[pendingDeleteId.value] ?? null) : null
+  pendingDeleteId.value
+    ? (pendingDeletes[pendingDeleteId.value] ?? null)
+    : null,
 );
 
 const visibleVideos = computed(() =>
-  videos.value.filter((video) => !pendingDeletes[video.id])
+  videos.value.filter((video) => !pendingDeletes[video.id]),
 );
 
 const filteredVideos = computed(() =>
@@ -182,7 +186,7 @@ const filteredVideos = computed(() =>
     }
 
     return true;
-  })
+  }),
 );
 
 const tagNameById = computed(() => {
@@ -192,21 +196,21 @@ const tagNameById = computed(() => {
 });
 
 const videoUrl = computed(() =>
-  playback.value?.filePath ? convertFileSrc(playback.value.filePath) : ""
+  playback.value?.filePath ? convertFileSrc(playback.value.filePath) : "",
 );
 const selectedIndex = computed(() =>
-  filteredVideos.value.findIndex((video) => video.id === selectedVideoId.value)
+  filteredVideos.value.findIndex((video) => video.id === selectedVideoId.value),
 );
 const contextMenuVideo = computed(
   () =>
     visibleVideos.value.find((video) => video.id === contextMenu.videoId) ??
-    null
+    null,
 );
 const themeToggleImage = computed(() =>
-  themeMode.value === "dark" ? themeLightUrl : themeDarkUrl
+  themeMode.value === "dark" ? themeLightUrl : themeDarkUrl,
 );
 const themeToggleLabel = computed(() =>
-  themeMode.value === "dark" ? "切换为浅色模式" : "切换为深色模式"
+  themeMode.value === "dark" ? "切换为浅色模式" : "切换为深色模式",
 );
 
 watch(
@@ -215,7 +219,7 @@ watch(
     titleDraft.value = video?.title ?? "";
     selectedTagIds.value = [...(video?.tagIds ?? [])];
   },
-  { immediate: true }
+  { immediate: true },
 );
 
 watch(
@@ -231,7 +235,7 @@ watch(
     resetActivePlayer();
     playbackIntent.value = "idle";
   },
-  { deep: true }
+  { deep: true },
 );
 
 watch(
@@ -242,8 +246,23 @@ watch(
     }
     settingsForms.lockToggle = nextSettings.lockEnabled;
     settingsForms.pauseOnBlur = nextSettings.pauseOnBlur;
+    settingsForms.lockOnBlur = nextSettings.lockOnBlur;
   },
-  { immediate: true }
+  { immediate: true },
+);
+
+watch(
+  () => settings.value?.lockEnabled && !isUnlocked.value,
+  async (shouldFocus) => {
+    if (!shouldFocus) {
+      return;
+    }
+
+    await nextTick();
+    unlockInputRef.value?.focus();
+    unlockInputRef.value?.select();
+  },
+  { immediate: true },
 );
 
 watch(volume, (nextValue) => {
@@ -283,7 +302,7 @@ watch(
     await nextTick();
     renameInputRef.value?.focus();
     renameInputRef.value?.select();
-  }
+  },
 );
 
 onMounted(async () => {
@@ -317,7 +336,13 @@ onMounted(async () => {
         const active = getActiveVideoElement();
         active?.pause();
       }
-    }
+
+      if (!focused && settings.value?.lockEnabled && settings.value?.lockOnBlur) {
+        isUnlocked.value = false;
+        unlockPassword.value = "";
+        settingsForms.message = "";
+      }
+    },
   );
 
   const handlePaste = (event: ClipboardEvent) => {
@@ -375,7 +400,7 @@ onBeforeUnmount(() => {
   removeFocusChangeListener?.();
   resizingCleanup?.();
   Object.values(pendingDeletes).forEach((entry) =>
-    window.clearTimeout(entry.timeoutId)
+    window.clearTimeout(entry.timeoutId),
   );
 });
 
@@ -490,7 +515,7 @@ async function saveSelectedVideo() {
   await library.saveVideoMeta(
     selectedVideo.value.id,
     titleDraft.value,
-    selectedVideo.value.isFavorite
+    selectedVideo.value.isFavorite,
   );
   if (playback.value?.id === selectedVideo.value.id) {
     await refreshPlaybackAfterLibraryMutation(selectedVideo.value.id, false);
@@ -533,7 +558,7 @@ function deleteVideoTarget(video: VideoItem) {
 
   if (selectedVideoId.value === video.id) {
     const replacement = visibleVideos.value.find(
-      (item) => item.id !== video.id && !pendingDeletes[item.id]
+      (item) => item.id !== video.id && !pendingDeletes[item.id],
     );
     library.selectVideo(replacement?.id ?? null);
   }
@@ -613,14 +638,24 @@ async function deleteTagEntry(tagId: string) {
     return;
   }
 
-  const confirmed = window.confirm(`Delete tag "${tag.name}" from the library?`);
+  const confirmed = window.confirm(
+    `Delete tag "${tag.name}" from the library?`,
+  );
   if (!confirmed) {
     return;
   }
 
-  await library.removeTag(tagId);
-  activeTagFilters.value = activeTagFilters.value.filter((value) => value !== tagId);
-  selectedTagIds.value = selectedTagIds.value.filter((value) => value !== tagId);
+  const removed = await library.removeTag(tagId);
+  if (!removed) {
+    return;
+  }
+
+  activeTagFilters.value = activeTagFilters.value.filter(
+    (value) => value !== tagId,
+  );
+  selectedTagIds.value = selectedTagIds.value.filter(
+    (value) => value !== tagId,
+  );
 
   if (contextMenuVideo.value) {
     contextMenu.showTags = true;
@@ -676,9 +711,15 @@ async function exportContextVideo() {
 }
 
 function toggleTagFilter(tagId: string) {
+  activeView.value = "library";
   activeTagFilters.value = activeTagFilters.value.includes(tagId)
     ? activeTagFilters.value.filter((value) => value !== tagId)
     : [...activeTagFilters.value, tagId];
+}
+
+function toggleFavoriteFilter() {
+  activeView.value = "library";
+  favoriteOnly.value = !favoriteOnly.value;
 }
 
 function toggleSelectedTag(tagId: string) {
@@ -722,7 +763,7 @@ async function playRelative(offset: -1 | 1) {
 
 async function toggleWindowFullscreen() {
   const wasPlaying = Boolean(
-    getActiveVideoElement() && !getActiveVideoElement()!.paused
+    getActiveVideoElement() && !getActiveVideoElement()!.paused,
   );
   if (!isTheaterMode.value) {
     prepareModeTransition(wasPlaying);
@@ -785,7 +826,7 @@ function onLoadedMetadata() {
   if (pendingResumeTime.value !== null) {
     video.currentTime = Math.min(
       pendingResumeTime.value,
-      video.duration || pendingResumeTime.value
+      video.duration || pendingResumeTime.value,
     );
     pendingResumeTime.value = null;
   }
@@ -819,7 +860,7 @@ function beginPreviewResize(event: MouseEvent) {
     previewPaneWidth.value = clamp(
       startWidth + delta,
       MIN_PREVIEW_WIDTH,
-      MAX_PREVIEW_WIDTH
+      MAX_PREVIEW_WIDTH,
     );
   };
 
@@ -900,11 +941,34 @@ async function expandSidebarForSearch() {
 //   await windowApi.startDragging();
 // }
 
-async function persistPauseOnBlur() {
-  settings.value = await updateAppSettings({
-    pauseOnBlur: settingsForms.pauseOnBlur,
-  });
-  settingsForms.message = "设置已保存";
+async function persistPlaybackSettings() {
+  settingsForms.message = "";
+
+  try {
+    settings.value = await updateAppSettings({
+      pauseOnBlur: settingsForms.pauseOnBlur,
+      lockOnBlur: settingsForms.lockOnBlur,
+    });
+  } catch (cause) {
+    settingsForms.pauseOnBlur = settings.value?.pauseOnBlur ?? false;
+    settingsForms.lockOnBlur = settings.value?.lockOnBlur ?? false;
+    settingsForms.message =
+      cause instanceof Error ? cause.message : String(cause);
+  }
+}
+
+async function togglePauseOnBlurSetting() {
+  settingsForms.pauseOnBlur = !settingsForms.pauseOnBlur;
+  await persistPlaybackSettings();
+}
+
+async function toggleLockOnBlurSetting() {
+  if (!settings?.value?.lockEnabled) {
+    return;
+  }
+
+  settingsForms.lockOnBlur = !settingsForms.lockOnBlur;
+  await persistPlaybackSettings();
 }
 
 async function enableLock() {
@@ -936,7 +1000,7 @@ async function changePassword() {
   try {
     settings.value = await changeLockPassword(
       settingsForms.currentPassword,
-      settingsForms.newPassword
+      settingsForms.newPassword,
     );
     settingsForms.currentPassword = "";
     settingsForms.newPassword = "";
@@ -988,7 +1052,7 @@ function formatBytes(bytes: number) {
   const units = ["B", "KB", "MB", "GB"];
   const exponent = Math.min(
     Math.floor(Math.log(bytes) / Math.log(1024)),
-    units.length - 1
+    units.length - 1,
   );
   const value = bytes / 1024 ** exponent;
   return `${value.toFixed(exponent === 0 ? 0 : 1)} ${units[exponent]}`;
@@ -1106,7 +1170,7 @@ function capturePlayerSnapshot() {
 
 async function refreshPlaybackAfterLibraryMutation(
   videoId: string,
-  shouldResume: boolean
+  shouldResume: boolean,
 ) {
   prepareModeTransition(shouldResume);
   playbackIntent.value = shouldResume ? "play" : "idle";
@@ -1141,6 +1205,7 @@ function resetActivePlayer() {
           应用已启用密码锁，输入密码后才可访问媒体库。
         </p>
         <input
+          ref="unlockInputRef"
           v-model="unlockPassword"
           type="password"
           class="mac-input mt-5 w-full"
@@ -1363,7 +1428,7 @@ function resetActivePlayer() {
         <div class="flex h-full min-h-0">
           <aside
             class="border-r border-[var(--hairline)] bg-[var(--sidebar-bg)] transition-[width] duration-200 overflow-hidden"
-            :class="sidebarCollapsed ? 'w-[76px]' : 'w-[286px]'"
+            :class="sidebarCollapsed ? 'w-[88px]' : 'w-[286px]'"
           >
             <div class="h-full overflow-auto px-3 py-4">
               <div class="flex min-h-full flex-col gap-3">
@@ -1409,15 +1474,27 @@ function resetActivePlayer() {
                         : 'space-y-2'
                     "
                   >
-                    <button
-                      class="sidebar-action-button"
-                      title="导入视频"
-                      aria-label="导入视频"
-                      @click="pickVideos"
-                    >
-                      <Upload :size="16" />
-                      <span v-if="!sidebarCollapsed">导入视频</span>
-                    </button>
+                    <template v-if="sidebarCollapsed">
+                      <button
+                        class="sidebar-icon-button"
+                        title="导入视频"
+                        aria-label="导入视频"
+                        @click="pickVideos"
+                      >
+                        <Upload :size="16" />
+                      </button>
+                    </template>
+                    <template v-else>
+                      <button
+                        class="sidebar-action-button"
+                        title="导入视频"
+                        aria-label="导入视频"
+                        @click="pickVideos"
+                      >
+                        <Upload :size="16" />
+                        <span>导入视频</span>
+                      </button>
+                    </template>
 
                     <template v-if="sidebarCollapsed">
                       <button
@@ -1437,6 +1514,7 @@ function resetActivePlayer() {
                           v-model="searchQuery"
                           class="sidebar-search__input"
                           placeholder="搜索标题或文件名"
+                          @focus="activeView = 'library'"
                         />
                       </label>
                     </template>
@@ -1444,14 +1522,6 @@ function resetActivePlayer() {
                 </div>
 
                 <template v-if="!sidebarCollapsed">
-                  <button
-                    class="sidebar-action-button"
-                    @click="activeView = 'library'"
-                  >
-                    <Check :size="16" />
-                    <span>资源库</span>
-                  </button>
-
                   <section class="mac-panel p-3">
                     <div class="flex items-center justify-between">
                       <p class="section-label">筛选</p>
@@ -1464,14 +1534,14 @@ function resetActivePlayer() {
                       <button
                         class="mac-chip"
                         :class="{ 'is-selected': favoriteOnly }"
-                        @click="favoriteOnly = !favoriteOnly"
+                        @click="toggleFavoriteFilter"
                       >
                         仅看收藏
                       </button>
                       <div
                         v-for="tag in tags"
                         :key="tag.id"
-                        class="tag-chip-group"
+                        class="tag-chip-group tag-chip-group--sidebar"
                         :style="getTagStyle(tag.name)"
                       >
                         <button
@@ -1496,17 +1566,44 @@ function resetActivePlayer() {
                   </section>
                 </template>
 
-                <div class="mt-auto">
-                  <button
-                    class="sidebar-action-button"
-                    :class="{ 'justify-center': sidebarCollapsed }"
-                    title="设置"
-                    aria-label="设置"
-                    @click="activeView = 'settings'"
+                <div
+                  class="mt-auto flex"
+                  :class="sidebarCollapsed ? 'justify-center' : ''"
+                >
+                  <div
+                    :class="
+                      sidebarCollapsed
+                        ? 'flex flex-col items-center gap-2'
+                        : 'flex w-full flex-col gap-2'
+                    "
                   >
-                    <Settings2 :size="16" />
-                    <span v-if="!sidebarCollapsed">设置</span>
-                  </button>
+                    <button
+                      :class="
+                        sidebarCollapsed
+                          ? 'sidebar-icon-button'
+                          : 'sidebar-action-button'
+                      "
+                      title="资源库"
+                      aria-label="资源库"
+                      @click="activeView = 'library'"
+                    >
+                      <FolderOpen :size="16" />
+                      <span v-if="!sidebarCollapsed">资源库</span>
+                    </button>
+                    <button
+                      :class="
+                        sidebarCollapsed
+                          ? 'sidebar-icon-button'
+                          : 'sidebar-action-button'
+                      "
+                      title="设置"
+                      aria-label="设置"
+                      @click="activeView = 'settings'"
+                    >
+                      <Settings2 :size="16" />
+                      <span v-if="!sidebarCollapsed">设置</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1621,17 +1718,28 @@ function resetActivePlayer() {
                     <button
                       class="mac-chip"
                       :class="{ 'is-selected': settingsForms.pauseOnBlur }"
-                      @click="
-                        settingsForms.pauseOnBlur = !settingsForms.pauseOnBlur
-                      "
+                      @click="togglePauseOnBlurSetting"
                     >
                       {{ settingsForms.pauseOnBlur ? "已开启" : "已关闭" }}
                     </button>
+                  </div>
+
+                  <div
+                    class="mt-4 flex items-center justify-between rounded-[16px] border border-[var(--hairline)] bg-[var(--surface)] px-4 py-3"
+                  >
+                    <div>
+                      <p class="text-sm font-medium">失焦时自动锁定</p>
+                      <p class="mt-1 text-xs text-[var(--text-secondary)]">
+                        应用失去焦点时自动回到解锁界面，需要已启用密码锁。
+                      </p>
+                    </div>
                     <button
-                      class="mac-primary-button"
-                      @click="persistPauseOnBlur"
+                      class="mac-chip"
+                      :class="{ 'is-selected': settingsForms.lockOnBlur }"
+                      :disabled="!settings?.lockEnabled"
+                      @click="toggleLockOnBlurSetting"
                     >
-                      保存播放设置
+                      {{ settingsForms.lockOnBlur ? "已开启" : "已关闭" }}
                     </button>
                   </div>
                 </section>
@@ -1708,14 +1816,14 @@ function resetActivePlayer() {
                           v-if="getVideoTagNames(video).length > 0"
                           class="mt-2 flex flex-wrap gap-1.5"
                         >
-                            <span
-                              v-for="tagName in getVisibleTagNames(video)"
-                              :key="tagName"
-                              class="video-tag-chip"
-                              :style="getTagStyle(tagName)"
-                            >
-                              {{ tagName }}
-                            </span>
+                          <span
+                            v-for="tagName in getVisibleTagNames(video)"
+                            :key="tagName"
+                            class="video-tag-chip"
+                            :style="getTagStyle(tagName)"
+                          >
+                            {{ tagName }}
+                          </span>
                           <span
                             v-if="getHiddenTagCount(video) > 0"
                             class="video-tag-chip"
@@ -1725,8 +1833,8 @@ function resetActivePlayer() {
                         </div>
                       </div>
 
-                      <div class="ml-4 flex items-center gap-2">
-                        <span class="text-xs text-[var(--text-muted)]">{{
+                      <div class="mac-row__meta ml-4 flex shrink-0 items-center gap-2">
+                        <span class="truncate text-xs text-[var(--text-muted)]">{{
                           formatBytes(video.fileSize)
                         }}</span>
                         <button
@@ -1942,7 +2050,9 @@ function resetActivePlayer() {
                               <button
                                 class="mac-chip mac-chip--tag"
                                 :class="{
-                                  'is-selected': selectedTagIds.includes(tag.id),
+                                  'is-selected': selectedTagIds.includes(
+                                    tag.id,
+                                  ),
                                 }"
                                 @click="toggleSelectedTag(tag.id)"
                               >
@@ -2066,7 +2176,9 @@ function resetActivePlayer() {
                       v-for="tag in tags"
                       :key="tag.id"
                       class="context-tag-button"
-                      :class="{ 'is-active': contextMenuVideo.tagIds.includes(tag.id) }"
+                      :class="{
+                        'is-active': contextMenuVideo.tagIds.includes(tag.id),
+                      }"
                       :style="getTagStyle(tag.name)"
                       @click="toggleTagFromMenu(tag.id)"
                     >

@@ -45,9 +45,11 @@ export type ImportResult = {
 export type AppSettings = {
   lockEnabled: boolean;
   pauseOnBlur: boolean;
+  lockOnBlur: boolean;
 };
 
 export type UpdateAppSettingsPayload = {
   lockEnabled?: boolean | null;
   pauseOnBlur?: boolean | null;
+  lockOnBlur?: boolean | null;
 };

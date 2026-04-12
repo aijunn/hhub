@@ -6,6 +6,7 @@ import {
   FolderOpen,
   Maximize,
   Minimize,
+  Moon,
   PanelLeftClose,
   PanelLeftOpen,
   PanelTopClose,
@@ -19,6 +20,7 @@ import {
   SkipBack,
   SkipForward,
   Square,
+  Sun,
   Tag,
   Trash2,
   Undo2,
@@ -37,8 +39,6 @@ import {
   watch,
 } from "vue";
 import brandIconUrl from "./assets/hhub-brand.svg";
-import themeDarkUrl from "./assets/theme-dark.svg";
-import themeLightUrl from "./assets/theme-light.svg";
 import {
   changeLockPassword,
   disableLockPassword,
@@ -49,6 +49,10 @@ import {
   updateAppSettings,
   verifyLockPassword,
 } from "./lib/api";
+import {
+  toggleMultiSelectId,
+  toggleSelectAll,
+} from "./lib/library-multiselect";
 import { resolvePostImportSelection } from "./lib/library-view-state";
 import { getTagTheme } from "./lib/tag-theme";
 import type { AppSettings, VideoItem } from "./lib/types";
@@ -106,6 +110,8 @@ const isUnlocked = ref(false);
 const settings = ref<AppSettings | null>(null);
 const skippedPaths = ref<string[]>([]);
 const statusMessage = ref("");
+const isSelectionMode = ref(false);
+const multiSelectedIds = ref<string[]>([]);
 const previewPaneWidth = ref(readPreviewWidth());
 const normalVideoRef = ref<HTMLVideoElement | null>(null);
 const theaterVideoRef = ref<HTMLVideoElement | null>(null);
@@ -188,6 +194,14 @@ const filteredVideos = computed(() =>
     return true;
   }),
 );
+const filteredVideoIds = computed(() =>
+  filteredVideos.value.map((video) => video.id),
+);
+const allFilteredVideosSelected = computed(
+  () =>
+    filteredVideoIds.value.length > 0 &&
+    filteredVideoIds.value.every((id) => multiSelectedIds.value.includes(id)),
+);
 
 const tagNameById = computed(() => {
   const lookup = new Map<string, string>();
@@ -206,11 +220,19 @@ const contextMenuVideo = computed(
     visibleVideos.value.find((video) => video.id === contextMenu.videoId) ??
     null,
 );
-const themeToggleImage = computed(() =>
-  themeMode.value === "dark" ? themeLightUrl : themeDarkUrl,
-);
 const themeToggleLabel = computed(() =>
   themeMode.value === "dark" ? "切换为浅色模式" : "切换为深色模式",
+);
+
+watch(
+  visibleVideos,
+  (nextVisibleVideos) => {
+    const visibleIds = new Set(nextVisibleVideos.map((video) => video.id));
+    multiSelectedIds.value = multiSelectedIds.value.filter((id) =>
+      visibleIds.has(id),
+    );
+  },
+  { immediate: true },
 );
 
 watch(
@@ -337,7 +359,11 @@ onMounted(async () => {
         active?.pause();
       }
 
-      if (!focused && settings.value?.lockEnabled && settings.value?.lockOnBlur) {
+      if (
+        !focused &&
+        settings.value?.lockEnabled &&
+        settings.value?.lockOnBlur
+      ) {
         isUnlocked.value = false;
         unlockPassword.value = "";
         settingsForms.message = "";
@@ -497,6 +523,70 @@ async function selectVideo(video: VideoItem) {
   await loadVideoForPreview(video.id);
 }
 
+function enterSelectionMode() {
+  activeView.value = "library";
+  isSelectionMode.value = true;
+  multiSelectedIds.value = [];
+  closeContextMenu();
+}
+
+function exitSelectionMode() {
+  isSelectionMode.value = false;
+  multiSelectedIds.value = [];
+  closeContextMenu();
+}
+
+function clearMultiSelection() {
+  multiSelectedIds.value = [];
+}
+
+function toggleMultiSelected(videoId: string) {
+  multiSelectedIds.value = toggleMultiSelectId(multiSelectedIds.value, videoId);
+}
+
+function toggleAllFilteredVideos() {
+  multiSelectedIds.value = toggleSelectAll(
+    multiSelectedIds.value,
+    filteredVideoIds.value,
+  );
+}
+
+function isVideoMultiSelected(videoId: string) {
+  return multiSelectedIds.value.includes(videoId);
+}
+
+async function handleVideoRowClick(video: VideoItem) {
+  if (isSelectionMode.value) {
+    toggleMultiSelected(video.id);
+    return;
+  }
+
+  await selectVideo(video);
+}
+
+async function handleVideoRowDoubleClick(video: VideoItem) {
+  if (isSelectionMode.value) {
+    return;
+  }
+
+  await playVideo(video);
+}
+
+async function handleVideoRowKeydown(event: KeyboardEvent, video: VideoItem) {
+  if (event.key !== "Enter" && event.key !== " ") {
+    return;
+  }
+
+  event.preventDefault();
+
+  if (isSelectionMode.value) {
+    toggleMultiSelected(video.id);
+    return;
+  }
+
+  await selectVideo(video);
+}
+
 async function playVideo(video: VideoItem) {
   playbackIntent.value = "play";
   await library.loadPlayback(video.id);
@@ -525,6 +615,14 @@ async function saveSelectedVideo() {
 
 async function toggleFavorite(video: VideoItem) {
   await library.toggleFavorite(video.id, !video.isFavorite);
+}
+
+async function handleVideoFavoriteClick(video: VideoItem) {
+  if (isSelectionMode.value) {
+    return;
+  }
+
+  await toggleFavorite(video);
 }
 
 function deleteVideoTarget(video: VideoItem) {
@@ -897,6 +995,14 @@ function openVideoContextMenu(event: MouseEvent, video: VideoItem) {
   contextMenu.renaming = false;
 }
 
+function handleVideoContextMenu(event: MouseEvent, video: VideoItem) {
+  if (isSelectionMode.value) {
+    return;
+  }
+
+  openVideoContextMenu(event, video);
+}
+
 function openRenameMenu() {
   contextMenu.mode = "rename";
   contextMenu.showTags = false;
@@ -1250,11 +1356,8 @@ function resetActivePlayer() {
             :aria-label="themeToggleLabel"
             @click="toggleTheme"
           >
-            <img
-              :src="themeToggleImage"
-              :alt="themeToggleLabel"
-              class="h-5 w-5 rounded-full"
-            />
+            <Moon v-if="themeMode === 'light'" :size="16" />
+            <Sun v-else :size="16" />
           </button>
         </div>
       </header>
@@ -1753,12 +1856,53 @@ function resetActivePlayer() {
             <div v-else class="flex h-full min-w-0">
               <section class="min-w-0 flex-1 overflow-hidden">
                 <div class="h-full overflow-auto px-4 py-4">
-                  <div class="mb-3 flex items-center justify-between">
+                  <div class="mb-3 flex items-start justify-between gap-3">
                     <div>
                       <p class="section-label">资源库</p>
                       <p class="mt-1 text-sm text-[var(--text-secondary)]">
-                        右键视频项可设置标签、重命名、删除或导出
+                        {{
+                          isSelectionMode
+                            ? "点击列表项进行多选，右侧预览保持当前状态。"
+                            : "右键视频项可设置标签、重命名、删除或导出"
+                        }}
                       </p>
+                    </div>
+                    <div class="selection-toolbar">
+                      <template v-if="isSelectionMode">
+                        <span class="selection-toolbar__status">
+                          已选 {{ multiSelectedIds.length }} 项
+                        </span>
+                        <button
+                          class="mac-secondary-button selection-toolbar__button"
+                          @click="toggleAllFilteredVideos"
+                        >
+                          {{
+                            allFilteredVideosSelected
+                              ? "取消全选"
+                              : "全选当前列表"
+                          }}
+                        </button>
+                        <button
+                          class="mac-secondary-button selection-toolbar__button"
+                          :disabled="multiSelectedIds.length === 0"
+                          @click="clearMultiSelection"
+                        >
+                          清空
+                        </button>
+                        <button
+                          class="mac-primary-button selection-toolbar__button"
+                          @click="exitSelectionMode"
+                        >
+                          完成
+                        </button>
+                      </template>
+                      <button
+                        v-else
+                        class="mac-secondary-button selection-toolbar__button"
+                        @click="enterSelectionMode"
+                      >
+                        选择
+                      </button>
                     </div>
                   </div>
 
@@ -1792,17 +1936,41 @@ function resetActivePlayer() {
                   </div>
 
                   <div class="mt-3 grid gap-2 pb-4">
-                    <button
+                    <div
                       v-for="video in filteredVideos"
                       :key="video.id"
                       class="mac-row"
-                      :class="{ 'is-selected': selectedVideoId === video.id }"
-                      @click="selectVideo(video)"
-                      @dblclick="playVideo(video)"
+                      :class="{
+                        'is-selected': isSelectionMode
+                          ? isVideoMultiSelected(video.id)
+                          : selectedVideoId === video.id,
+                        'is-selection-mode': isSelectionMode,
+                      }"
+                      role="button"
+                      tabindex="0"
+                      :aria-pressed="
+                        isSelectionMode
+                          ? isVideoMultiSelected(video.id)
+                          : undefined
+                      "
+                      @click="handleVideoRowClick(video)"
+                      @dblclick="handleVideoRowDoubleClick(video)"
+                      @keydown="handleVideoRowKeydown($event, video)"
                       @contextmenu.stop.prevent="
-                        openVideoContextMenu($event, video)
+                        handleVideoContextMenu($event, video)
                       "
                     >
+                      <span
+                        v-if="isSelectionMode"
+                        class="selection-indicator"
+                        :class="{
+                          'is-active': isVideoMultiSelected(video.id),
+                        }"
+                        aria-hidden="true"
+                      >
+                        <span />
+                      </span>
+
                       <div class="min-w-0 flex-1">
                         <p class="truncate text-sm font-medium">
                           {{ video.title }}
@@ -1833,19 +2001,23 @@ function resetActivePlayer() {
                         </div>
                       </div>
 
-                      <div class="mac-row__meta ml-4 flex shrink-0 items-center gap-2">
-                        <span class="truncate text-xs text-[var(--text-muted)]">{{
-                          formatBytes(video.fileSize)
-                        }}</span>
+                      <div
+                        class="mac-row__meta ml-4 flex shrink-0 items-center gap-2"
+                      >
+                        <span
+                          class="truncate text-xs text-[var(--text-muted)]"
+                          >{{ formatBytes(video.fileSize) }}</span
+                        >
                         <button
+                          v-if="!isSelectionMode"
                           class="mac-star"
                           :class="{ 'is-active': video.isFavorite }"
-                          @click.stop="toggleFavorite(video)"
+                          @click.stop="handleVideoFavoriteClick(video)"
                         >
                           ★
                         </button>
                       </div>
-                    </button>
+                    </div>
 
                     <div
                       v-if="filteredVideos.length === 0"

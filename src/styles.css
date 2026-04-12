@@ -215,6 +215,10 @@ select {
   color: var(--text-muted);
 }
 
+.library-sort-select {
+  min-width: 100%;
+}
+
 .mac-panel,
 .mac-control-card {
   border: 1px solid var(--hairline);

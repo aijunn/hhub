@@ -265,7 +265,7 @@ impl MediaLibrary {
                 "
                 SELECT id, title, file_name, stored_path, mime_type, file_size, duration_ms, is_favorite, created_at, updated_at
                 FROM videos
-                ORDER BY updated_at DESC, title COLLATE NOCASE ASC
+                ORDER BY created_at DESC, title COLLATE NOCASE ASC
                 ",
             )
             .map_err(|err| err.to_string())?;
@@ -930,6 +930,34 @@ mod tests {
             .join("library/videos")
             .join(&renamed.file_name)
             .exists());
+    }
+
+    #[test]
+    fn list_videos_stays_sorted_by_created_time_after_metadata_updates() {
+        let temp = TempDir::new().expect("temp dir");
+        let source_a = create_fixture_file(&temp, "older.mp4");
+        let source_b = create_fixture_file(&temp, "newer.mp4");
+        let library = MediaLibrary::new(temp.path().join("library"));
+
+        library.init().expect("init library");
+        let older = library.import_video(&source_a).expect("import older");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let newer = library.import_video(&source_b).expect("import newer");
+
+        library
+            .update_video_meta(
+                &older.id,
+                UpdateVideoPayload {
+                    title: Some("older renamed".into()),
+                    is_favorite: None,
+                },
+            )
+            .expect("rename older");
+
+        let videos = library.list_videos(None).expect("list videos");
+        let ordered_ids = videos.iter().map(|video| video.id.as_str()).collect::<Vec<_>>();
+
+        assert_eq!(ordered_ids, vec![newer.id.as_str(), older.id.as_str()]);
     }
 
     #[test]

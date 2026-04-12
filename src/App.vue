@@ -53,7 +53,9 @@ import {
   toggleMultiSelectId,
   toggleSelectAll,
 } from "./lib/library-multiselect";
+import { removeVideoTag } from "./lib/video-tags";
 import { resolvePostImportSelection } from "./lib/library-view-state";
+import { sortVideos, type VideoSortOption } from "./lib/video-sort";
 import { getTagTheme } from "./lib/tag-theme";
 import type { AppSettings, VideoItem } from "./lib/types";
 import { useLibraryStore } from "./stores/library";
@@ -74,10 +76,12 @@ const SUPPORTED_EXTENSIONS = ["mp4", "mov", "webm", "m4v", "ogv"];
 const PREVIEW_WIDTH_KEY = "hhub.preview-pane-width";
 const SIDEBAR_COLLAPSED_KEY = "hhub.sidebar-collapsed";
 const THEME_PREFERENCE_KEY = "hhub.theme-preference";
+const VIDEO_SORT_KEY = "hhub.video-sort";
 const DEFAULT_PREVIEW_WIDTH = 408;
 const MIN_PREVIEW_WIDTH = 320;
 const MAX_PREVIEW_WIDTH = 900;
 const DELETE_UNDO_MS = 5000;
+const TITLE_SAVE_DEBOUNCE_MS = 300;
 
 type ThemeMode = "light" | "dark";
 type ContextMenuMode = "default" | "rename";
@@ -93,7 +97,7 @@ const searchQuery = ref("");
 const favoriteOnly = ref(false);
 const activeTagFilters = ref<string[]>([]);
 const titleDraft = ref("");
-const selectedTagIds = ref<string[]>([]);
+const videoSort = ref<VideoSortOption>(readVideoSort());
 const volume = ref(0.75);
 const playbackRate = ref(1);
 const progress = ref(0);
@@ -158,6 +162,9 @@ let removeGlobalClick: (() => void) | null = null;
 let removeGlobalKeydown: (() => void) | null = null;
 let removeFocusChangeListener: (() => void) | null = null;
 let resizingCleanup: (() => void) | null = null;
+let titleSaveTimeout: number | null = null;
+let isSyncingTitleDraft = false;
+let pendingSelectedTagUpdate = Promise.resolve();
 
 const pendingDeleteBanner = computed(() =>
   pendingDeleteId.value
@@ -170,29 +177,32 @@ const visibleVideos = computed(() =>
 );
 
 const filteredVideos = computed(() =>
-  visibleVideos.value.filter((video) => {
-    if (favoriteOnly.value && !video.isFavorite) {
-      return false;
-    }
+  sortVideos(
+    visibleVideos.value.filter((video) => {
+      if (favoriteOnly.value && !video.isFavorite) {
+        return false;
+      }
 
-    if (
-      searchQuery.value.trim() &&
-      !`${video.title} ${video.fileName}`
-        .toLowerCase()
-        .includes(searchQuery.value.trim().toLowerCase())
-    ) {
-      return false;
-    }
+      if (
+        searchQuery.value.trim() &&
+        !`${video.title} ${video.fileName}`
+          .toLowerCase()
+          .includes(searchQuery.value.trim().toLowerCase())
+      ) {
+        return false;
+      }
 
-    if (
-      activeTagFilters.value.length > 0 &&
-      !activeTagFilters.value.every((tagId) => video.tagIds.includes(tagId))
-    ) {
-      return false;
-    }
+      if (
+        activeTagFilters.value.length > 0 &&
+        !activeTagFilters.value.every((tagId) => video.tagIds.includes(tagId))
+      ) {
+        return false;
+      }
 
-    return true;
-  }),
+      return true;
+    }),
+    videoSort.value,
+  ),
 );
 const filteredVideoIds = computed(() =>
   filteredVideos.value.map((video) => video.id),
@@ -207,6 +217,19 @@ const tagNameById = computed(() => {
   const lookup = new Map<string, string>();
   tags.value.forEach((tag) => lookup.set(tag.id, tag.name));
   return lookup;
+});
+const selectedVideoTags = computed(() => {
+  const video = selectedVideo.value;
+  if (!video) {
+    return [];
+  }
+
+  return video.tagIds
+    .map((tagId) => {
+      const tagName = tagNameById.value.get(tagId);
+      return tagName ? { id: tagId, name: tagName } : null;
+    })
+    .filter((tag): tag is { id: string; name: string } => Boolean(tag));
 });
 
 const videoUrl = computed(() =>
@@ -238,11 +261,44 @@ watch(
 watch(
   selectedVideo,
   (video) => {
+    if (titleSaveTimeout !== null) {
+      window.clearTimeout(titleSaveTimeout);
+      titleSaveTimeout = null;
+    }
+
+    isSyncingTitleDraft = true;
     titleDraft.value = video?.title ?? "";
-    selectedTagIds.value = [...(video?.tagIds ?? [])];
+    isSyncingTitleDraft = false;
   },
   { immediate: true },
 );
+
+watch(titleDraft, (nextTitle) => {
+  if (isSyncingTitleDraft) {
+    return;
+  }
+
+  const video = selectedVideo.value;
+  if (!video) {
+    return;
+  }
+
+  if (titleSaveTimeout !== null) {
+    window.clearTimeout(titleSaveTimeout);
+    titleSaveTimeout = null;
+  }
+
+  if (nextTitle === video.title) {
+    return;
+  }
+
+  const videoId = video.id;
+  const isFavorite = video.isFavorite;
+  titleSaveTimeout = window.setTimeout(async () => {
+    titleSaveTimeout = null;
+    await library.saveVideoMeta(videoId, nextTitle, isFavorite);
+  }, TITLE_SAVE_DEBOUNCE_MS);
+});
 
 watch(
   playback,
@@ -312,6 +368,10 @@ watch(sidebarCollapsed, (value) => {
 watch(themeMode, (value) => {
   applyTheme(value);
   localStorage.setItem(THEME_PREFERENCE_KEY, value);
+});
+
+watch(videoSort, (value) => {
+  localStorage.setItem(VIDEO_SORT_KEY, value);
 });
 
 watch(
@@ -418,6 +478,9 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  if (titleSaveTimeout !== null) {
+    window.clearTimeout(titleSaveTimeout);
+  }
   removeDragListener?.();
   removePasteListener?.();
   removePasteShortcutListener?.();
@@ -597,22 +660,6 @@ async function loadVideoForPreview(videoId: string) {
   await library.loadPlayback(videoId);
 }
 
-async function saveSelectedVideo() {
-  if (!selectedVideo.value) {
-    return;
-  }
-
-  await library.saveVideoMeta(
-    selectedVideo.value.id,
-    titleDraft.value,
-    selectedVideo.value.isFavorite,
-  );
-  if (playback.value?.id === selectedVideo.value.id) {
-    await refreshPlaybackAfterLibraryMutation(selectedVideo.value.id, false);
-  }
-  statusMessage.value = "已保存视频信息";
-}
-
 async function toggleFavorite(video: VideoItem) {
   await library.toggleFavorite(video.id, !video.isFavorite);
 }
@@ -684,14 +731,6 @@ async function undoDelete() {
   }
 }
 
-async function saveSelectedTags() {
-  if (!selectedVideo.value) {
-    return;
-  }
-
-  await library.updateVideoTags(selectedVideo.value.id, selectedTagIds.value);
-}
-
 async function toggleTagFromMenu(tagId: string) {
   const video = contextMenuVideo.value;
   if (!video) {
@@ -751,9 +790,6 @@ async function deleteTagEntry(tagId: string) {
   activeTagFilters.value = activeTagFilters.value.filter(
     (value) => value !== tagId,
   );
-  selectedTagIds.value = selectedTagIds.value.filter(
-    (value) => value !== tagId,
-  );
 
   if (contextMenuVideo.value) {
     contextMenu.showTags = true;
@@ -770,9 +806,6 @@ async function renameContextVideo() {
   contextMenu.renaming = true;
   try {
     await library.saveVideoMeta(video.id, nextTitle, video.isFavorite);
-    if (playback.value?.id === video.id) {
-      await refreshPlaybackAfterLibraryMutation(video.id, false);
-    }
     statusMessage.value = "已重命名视频";
     closeContextMenu();
   } finally {
@@ -820,10 +853,26 @@ function toggleFavoriteFilter() {
   favoriteOnly.value = !favoriteOnly.value;
 }
 
-function toggleSelectedTag(tagId: string) {
-  selectedTagIds.value = selectedTagIds.value.includes(tagId)
-    ? selectedTagIds.value.filter((value) => value !== tagId)
-    : [...selectedTagIds.value, tagId];
+async function persistSelectedVideoTags(nextTagIds: string[]) {
+  const video = selectedVideo.value;
+  if (!video) {
+    return;
+  }
+
+  const videoId = video.id;
+  pendingSelectedTagUpdate = pendingSelectedTagUpdate.then(async () => {
+    await library.updateVideoTags(videoId, nextTagIds);
+  });
+  await pendingSelectedTagUpdate;
+}
+
+async function removeSelectedVideoTag(tagId: string) {
+  const video = selectedVideo.value;
+  if (!video) {
+    return;
+  }
+
+  await persistSelectedVideoTags(removeVideoTag(video.tagIds, tagId));
 }
 
 function togglePlayback() {
@@ -1219,6 +1268,20 @@ function readPreviewWidth() {
     return DEFAULT_PREVIEW_WIDTH;
   }
   return clamp(raw, MIN_PREVIEW_WIDTH, MAX_PREVIEW_WIDTH);
+}
+
+function readVideoSort(): VideoSortOption {
+  const value = localStorage.getItem(VIDEO_SORT_KEY);
+  if (
+    value === "created-desc" ||
+    value === "created-asc" ||
+    value === "title-asc" ||
+    value === "title-desc"
+  ) {
+    return value;
+  }
+
+  return "created-desc";
 }
 
 function readStoredBoolean(key: string) {
@@ -1641,6 +1704,27 @@ function resetActivePlayer() {
                       >
                         仅看收藏
                       </button>
+                      <label class="library-sort-select">
+                        <span class="control-label">排序</span>
+                        <select v-model="videoSort" class="mac-select mt-2 w-full">
+                          <option value="created-desc">添加时间：新到旧</option>
+                          <option value="created-asc">添加时间：旧到新</option>
+                          <option value="title-asc">标题：A-Z</option>
+                          <option value="title-desc">标题：Z-A</option>
+                        </select>
+                      </label>
+                    </div>
+                  </section>
+
+                  <section class="mac-panel mt-3 p-3">
+                    <div class="flex items-center justify-between">
+                      <p class="section-label">标签</p>
+                      <span class="text-[11px] text-[var(--text-muted)]">{{
+                        tags.length
+                      }}</span>
+                    </div>
+
+                    <div class="mt-3 flex flex-wrap gap-2">
                       <div
                         v-for="tag in tags"
                         :key="tag.id"
@@ -2179,12 +2263,7 @@ function resetActivePlayer() {
                     <div v-if="selectedVideo" class="mt-5 space-y-4 pb-4">
                       <div class="mac-panel p-4">
                         <div class="flex items-start justify-between gap-3">
-                          <div class="min-w-0">
-                            <p class="section-label">详情</p>
-                            <p class="mt-2 truncate text-sm font-medium">
-                              {{ selectedVideo.title }}
-                            </p>
-                          </div>
+                          <p class="section-label">详情</p>
                           <button
                             class="mac-star"
                             :class="{ 'is-active': selectedVideo.isFavorite }"
@@ -2194,7 +2273,7 @@ function resetActivePlayer() {
                           </button>
                         </div>
 
-                        <label class="mt-4 block">
+                        <label class="mt-3 block">
                           <span class="control-label">标题</span>
                           <input
                             v-model="titleDraft"
@@ -2205,40 +2284,32 @@ function resetActivePlayer() {
                         <div class="mt-4">
                           <div class="flex items-center justify-between">
                             <span class="control-label">标签</span>
-                            <button
-                              class="text-xs text-[var(--accent-strong)]"
-                              @click="saveSelectedTags"
-                            >
-                              保存
-                            </button>
                           </div>
                           <div class="mt-3 flex flex-wrap gap-2">
                             <div
-                              v-for="tag in tags"
+                              v-for="tag in selectedVideoTags"
                               :key="tag.id"
-                              class="tag-chip-group"
+                              class="tag-chip-group tag-chip-group--sidebar"
                               :style="getTagStyle(tag.name)"
                             >
-                              <button
-                                class="mac-chip mac-chip--tag"
-                                :class="{
-                                  'is-selected': selectedTagIds.includes(
-                                    tag.id,
-                                  ),
-                                }"
-                                @click="toggleSelectedTag(tag.id)"
-                              >
+                              <span class="mac-chip mac-chip--tag">
                                 {{ tag.name }}
-                              </button>
+                              </span>
                               <button
                                 class="tag-chip-group__delete"
-                                title="删除标签"
-                                aria-label="删除标签"
-                                @click.stop="deleteTagEntry(tag.id)"
+                                title="移除当前视频标签"
+                                aria-label="移除当前视频标签"
+                                @click.stop="removeSelectedVideoTag(tag.id)"
                               >
                                 <X :size="12" />
                               </button>
                             </div>
+                            <p
+                              v-if="selectedVideoTags.length === 0"
+                              class="text-sm text-[var(--text-secondary)]"
+                            >
+                              暂无标签
+                            </p>
                           </div>
                         </div>
 
@@ -2258,18 +2329,6 @@ function resetActivePlayer() {
                         </div>
 
                         <div class="mt-4 flex flex-wrap gap-2">
-                          <button
-                            class="mac-primary-button"
-                            @click="saveSelectedVideo"
-                          >
-                            保存改名
-                          </button>
-                          <button
-                            class="mac-secondary-button"
-                            @click="loadVideoForPreview(selectedVideo.id)"
-                          >
-                            加载预览
-                          </button>
                           <button
                             class="mac-danger-button"
                             @click="deleteVideoTarget(selectedVideo)"

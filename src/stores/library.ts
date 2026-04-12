@@ -11,6 +11,7 @@ import {
   updateVideoMeta,
 } from "../lib/api";
 import { resolveLibrarySelection } from "../lib/library-selection";
+import { replaceVideoInList } from "../lib/video-updates";
 import type { PlaybackInfo, TagItem, VideoFilter, VideoItem } from "../lib/types";
 
 type LibraryState = {
@@ -111,8 +112,16 @@ export const useLibraryStore = defineStore("library", {
     async saveVideoMeta(id: string, title: string, isFavorite: boolean) {
       this.clearError();
       try {
-        await updateVideoMeta(id, { title, isFavorite });
-        await this.refreshVideos();
+        const updated = await updateVideoMeta(id, { title, isFavorite });
+        this.videos = replaceVideoInList(this.videos, updated);
+        if (this.playback?.id === id) {
+          this.playback = {
+            ...this.playback,
+            title: updated.title,
+            fileName: updated.fileName,
+            filePath: updated.storedPath,
+          };
+        }
       } catch (error) {
         this.setError(error);
       }
@@ -121,8 +130,8 @@ export const useLibraryStore = defineStore("library", {
     async toggleFavorite(id: string, nextValue: boolean) {
       this.clearError();
       try {
-        await updateVideoMeta(id, { isFavorite: nextValue });
-        await this.refreshVideos();
+        const updated = await updateVideoMeta(id, { isFavorite: nextValue });
+        this.videos = replaceVideoInList(this.videos, updated);
       } catch (error) {
         this.setError(error);
       }
@@ -169,8 +178,8 @@ export const useLibraryStore = defineStore("library", {
     async updateVideoTags(id: string, tagIds: string[]) {
       this.clearError();
       try {
-        await setVideoTags(id, tagIds);
-        await this.refreshVideos();
+        const updated = await setVideoTags(id, tagIds);
+        this.videos = replaceVideoInList(this.videos, updated);
       } catch (error) {
         this.setError(error);
       }

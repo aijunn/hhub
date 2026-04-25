@@ -10,6 +10,12 @@ export type VideoItem = {
   tagIds: string[];
   createdAt: number;
   updatedAt: number;
+  playCount: number;
+};
+
+export type DailyPlayStat = {
+  date: string;
+  playCount: number;
 };
 
 export type TagItem = {

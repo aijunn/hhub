@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppSettings,
+  DailyPlayStat,
   ImportResult,
   PlaybackInfo,
   TagItem,
@@ -50,6 +51,14 @@ export function setVideoTags(id: string, tagIds: string[]) {
 
 export function getPlaybackSource(id: string) {
   return invoke<PlaybackInfo>("get_playback_source", { id });
+}
+
+export function recordVideoPlay(id: string) {
+  return invoke<VideoItem>("record_video_play", { id });
+}
+
+export function listMonthlyPlayStats(year: number, month: number) {
+  return invoke<DailyPlayStat[]>("list_monthly_play_stats", { year, month });
 }
 
 export function exportVideo(id: string, destinationPath: string) {

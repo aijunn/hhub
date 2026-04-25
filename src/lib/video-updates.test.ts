@@ -16,6 +16,7 @@ function createVideo(overrides: Partial<VideoItem>): VideoItem {
     tagIds: [],
     createdAt: 1,
     updatedAt: 1,
+    playCount: 0,
     ...overrides,
   };
 }

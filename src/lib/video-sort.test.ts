@@ -16,6 +16,7 @@ function createVideo(overrides: Partial<VideoItem>): VideoItem {
     tagIds: [],
     createdAt: 1,
     updatedAt: 1,
+    playCount: 0,
     ...overrides,
   };
 }
@@ -49,5 +50,31 @@ describe("sortVideos", () => {
       "b",
       "c",
     ]);
+  });
+
+  it("sorts by play count descending", () => {
+    const videosByPlays = [
+      createVideo({ id: "low", title: "Low", createdAt: 3, playCount: 1 }),
+      createVideo({ id: "high", title: "High", createdAt: 1, playCount: 8 }),
+      createVideo({ id: "tie-newer", title: "Tie Newer", createdAt: 5, playCount: 4 }),
+      createVideo({ id: "tie-older", title: "Tie Older", createdAt: 2, playCount: 4 }),
+    ];
+
+    expect(
+      sortVideos(videosByPlays, "play-count-desc").map((video) => video.id),
+    ).toEqual(["high", "tie-newer", "tie-older", "low"]);
+  });
+
+  it("sorts by play count ascending", () => {
+    const videosByPlays = [
+      createVideo({ id: "middle", title: "Middle", createdAt: 3, playCount: 4 }),
+      createVideo({ id: "none-newer", title: "None Newer", createdAt: 5, playCount: 0 }),
+      createVideo({ id: "none-older", title: "None Older", createdAt: 2, playCount: 0 }),
+      createVideo({ id: "high", title: "High", createdAt: 1, playCount: 8 }),
+    ];
+
+    expect(
+      sortVideos(videosByPlays, "play-count-asc").map((video) => video.id),
+    ).toEqual(["none-newer", "none-older", "middle", "high"]);
   });
 });

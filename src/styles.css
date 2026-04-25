@@ -219,6 +219,195 @@ select {
   min-width: 100%;
 }
 
+.play-calendar {
+  width: 100%;
+  padding: 0 clamp(6px, 4%, 12px);
+}
+
+.play-calendar__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.play-calendar__title {
+  color: var(--text-primary);
+  font-size: 1.02rem;
+  font-weight: 760;
+  line-height: 1.2;
+}
+
+.play-calendar__subtitle {
+  margin-top: 0.2rem;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.play-calendar__nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.play-calendar__nav-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.play-calendar__nav-button:hover:not(:disabled) {
+  background: rgba(127, 127, 127, 0.08);
+  color: var(--text-primary);
+}
+
+.play-calendar__nav-button:disabled,
+.play-calendar__nav-button.is-disabled {
+  color: var(--text-muted);
+  cursor: default;
+  opacity: 0.42;
+}
+
+.play-calendar__weekdays,
+.play-calendar__grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.play-calendar__weekdays {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1;
+  text-align: center;
+}
+
+.play-calendar__grid {
+  margin-top: 8px;
+}
+
+.play-calendar__day {
+  cursor: default;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--surface) 70%, var(--text-muted) 10%);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 88%, var(--text-muted) 7%);
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  font-weight: 620;
+  line-height: 1;
+  outline: none;
+}
+
+.play-calendar__day.is-outside {
+  background: transparent;
+  border-color: transparent;
+  color: color-mix(in srgb, var(--text-muted) 54%, transparent);
+}
+
+.play-calendar__day.is-today:not(.is-outside) {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-strong) 38%, transparent);
+}
+
+.play-calendar__day:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-strong) 34%, transparent);
+}
+
+.play-calendar__tooltip {
+  position: absolute;
+  z-index: 20;
+  left: 50%;
+  bottom: calc(100%);
+  display: grid;
+  gap: 0.16rem;
+  min-width: max-content;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9px;
+  background: rgba(24, 25, 28, 0.94);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+  color: #fff;
+  opacity: 0;
+  padding: 0.38rem 0.5rem;
+  pointer-events: none;
+  text-align: center;
+  transform: translate(-50%, -4px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease,
+    visibility 120ms ease;
+  visibility: hidden;
+  white-space: nowrap;
+}
+
+.play-calendar__tooltip span {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.62rem;
+  font-weight: 500;
+}
+
+.play-calendar__tooltip strong {
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.play-calendar__day:hover .play-calendar__tooltip,
+.play-calendar__day:focus-visible .play-calendar__tooltip {
+  opacity: 1;
+  transform: translate(-50%, -8px);
+  visibility: visible;
+}
+
+.play-calendar__day--level-1 {
+  background: #b7f7d0;
+  color: #17643a;
+}
+
+.play-calendar__day--level-2 {
+  background: #57e389;
+  color: #063f22;
+}
+
+.play-calendar__day--level-3 {
+  background: #18b96f;
+  color: #ffffff;
+}
+
+.play-calendar__day--level-4 {
+  background: #2e789f;
+  color: #ffffff;
+}
+
+.play-calendar__day--level-5 {
+  background: #1f4f7a;
+  color: #ffffff;
+}
+
+.video-play-count {
+  flex: 0 0 auto;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: rgba(127, 127, 127, 0.06);
+  color: var(--text-secondary);
+  padding: 0.16rem 0.45rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .mac-panel,
 .mac-control-card {
   border: 1px solid var(--hairline);

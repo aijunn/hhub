@@ -27,6 +27,14 @@ pub struct VideoListItem {
     pub tag_ids: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub play_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyPlayStat {
+    pub date: String,
+    pub play_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -141,6 +149,14 @@ impl MediaLibrary {
                     PRIMARY KEY (video_id, tag_id),
                     FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE,
                     FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS video_play_stats (
+                    video_id TEXT NOT NULL,
+                    played_on TEXT NOT NULL,
+                    play_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (video_id, played_on),
+                    FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
                 );
 
                 CREATE TABLE IF NOT EXISTS app_settings (
@@ -288,6 +304,78 @@ impl MediaLibrary {
         self.get_video(&connection, video_id)
     }
 
+    pub fn record_video_play(&self, video_id: &str) -> Result<VideoListItem, String> {
+        let connection = self.open_connection()?;
+        self.load_video_row(&connection, video_id)?;
+
+        connection
+            .execute(
+                "
+                INSERT INTO video_play_stats (video_id, played_on, play_count)
+                VALUES (?1, date('now', 'localtime'), 1)
+                ON CONFLICT(video_id, played_on)
+                DO UPDATE SET play_count = play_count + 1
+                ",
+                params![video_id],
+            )
+            .map_err(|err| err.to_string())?;
+
+        self.get_video(&connection, video_id)
+    }
+
+    pub fn list_monthly_play_stats(
+        &self,
+        year: i64,
+        month: i64,
+    ) -> Result<Vec<DailyPlayStat>, String> {
+        let (start_date, end_date) = month_bounds(year, month)?;
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT played_on, SUM(play_count)
+                FROM video_play_stats
+                WHERE played_on >= ?1
+                  AND played_on < ?2
+                GROUP BY played_on
+                ORDER BY played_on ASC
+                ",
+            )
+            .map_err(|err| err.to_string())?;
+
+        let rows = statement
+            .query_map(params![start_date, end_date], |row| {
+                Ok(DailyPlayStat {
+                    date: row.get(0)?,
+                    play_count: row.get::<_, i64>(1)? as u64,
+                })
+            })
+            .map_err(|err| err.to_string())?;
+
+        let mut stats = Vec::new();
+        for row in rows {
+            stats.push(row.map_err(|err| err.to_string())?);
+        }
+
+        Ok(stats)
+    }
+
+    #[cfg(test)]
+    fn current_year_month(&self) -> Result<(i64, i64), String> {
+        let connection = self.open_connection()?;
+        connection
+            .query_row(
+                "
+                SELECT
+                    CAST(strftime('%Y', 'now', 'localtime') AS INTEGER),
+                    CAST(strftime('%m', 'now', 'localtime') AS INTEGER)
+                ",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|err| err.to_string())
+    }
+
     pub fn update_video_meta(
         &self,
         video_id: &str,
@@ -345,6 +433,12 @@ impl MediaLibrary {
         connection
             .execute(
                 "DELETE FROM video_tags WHERE video_id = ?1",
+                params![video_id],
+            )
+            .map_err(|err| err.to_string())?;
+        connection
+            .execute(
+                "DELETE FROM video_play_stats WHERE video_id = ?1",
                 params![video_id],
             )
             .map_err(|err| err.to_string())?;
@@ -652,6 +746,7 @@ impl MediaLibrary {
         stored: StoredVideoRow,
     ) -> Result<VideoListItem, String> {
         let tag_ids = self.load_tag_ids(connection, &stored.id)?;
+        let play_count = self.load_play_count(connection, &stored.id)?;
 
         Ok(VideoListItem {
             id: stored.id,
@@ -665,7 +760,23 @@ impl MediaLibrary {
             tag_ids,
             created_at: stored.created_at,
             updated_at: stored.updated_at,
+            play_count,
         })
+    }
+
+    fn load_play_count(&self, connection: &Connection, video_id: &str) -> Result<u64, String> {
+        connection
+            .query_row(
+                "
+                SELECT COALESCE(SUM(play_count), 0)
+                FROM video_play_stats
+                WHERE video_id = ?1
+                ",
+                params![video_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| count as u64)
+            .map_err(|err| err.to_string())
     }
 
     fn load_tag_ids(&self, connection: &Connection, video_id: &str) -> Result<Vec<String>, String> {
@@ -836,6 +947,23 @@ fn now_ts() -> i64 {
         .as_secs() as i64
 }
 
+fn month_bounds(year: i64, month: i64) -> Result<(String, String), String> {
+    if !(1..=12).contains(&month) {
+        return Err("month must be between 1 and 12".into());
+    }
+
+    let (end_year, end_month) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+
+    Ok((
+        format!("{year:04}-{month:02}-01"),
+        format!("{end_year:04}-{end_month:02}-01"),
+    ))
+}
+
 fn validate_password(password: &str) -> Result<(), String> {
     if password.trim().len() < 4 {
         return Err("password must be at least 4 characters".into());
@@ -873,7 +1001,7 @@ fn verify_password_against_settings(
 #[cfg(test)]
 mod tests {
     use super::{MediaLibrary, UpdateAppSettingsPayload, UpdateVideoPayload};
-    use rusqlite::Connection;
+    use rusqlite::{params, Connection};
     use std::{fs, path::PathBuf};
     use tempfile::TempDir;
 
@@ -955,9 +1083,101 @@ mod tests {
             .expect("rename older");
 
         let videos = library.list_videos(None).expect("list videos");
-        let ordered_ids = videos.iter().map(|video| video.id.as_str()).collect::<Vec<_>>();
+        let ordered_ids = videos
+            .iter()
+            .map(|video| video.id.as_str())
+            .collect::<Vec<_>>();
 
         assert_eq!(ordered_ids, vec![newer.id.as_str(), older.id.as_str()]);
+    }
+
+    #[test]
+    fn imported_videos_start_with_zero_play_count() {
+        let temp = TempDir::new().expect("temp dir");
+        let source = create_fixture_file(&temp, "unplayed.mp4");
+        let library = MediaLibrary::new(temp.path().join("library"));
+
+        library.init().expect("init library");
+        let imported = library.import_video(&source).expect("import video");
+        let videos = library.list_videos(None).expect("list videos");
+
+        assert_eq!(imported.play_count, 0);
+        assert_eq!(videos[0].play_count, 0);
+    }
+
+    #[test]
+    fn record_video_play_increments_video_and_daily_counts() {
+        let temp = TempDir::new().expect("temp dir");
+        let source = create_fixture_file(&temp, "played.mp4");
+        let library = MediaLibrary::new(temp.path().join("library"));
+
+        library.init().expect("init library");
+        let imported = library.import_video(&source).expect("import video");
+
+        let once = library
+            .record_video_play(&imported.id)
+            .expect("record first play");
+        let twice = library
+            .record_video_play(&imported.id)
+            .expect("record second play");
+        let (year, month) = library.current_year_month().expect("current month");
+        let stats = library
+            .list_monthly_play_stats(year, month)
+            .expect("list monthly play stats");
+
+        assert_eq!(once.play_count, 1);
+        assert_eq!(twice.play_count, 2);
+        assert_eq!(stats.iter().map(|stat| stat.play_count).sum::<u64>(), 2);
+    }
+
+    #[test]
+    fn list_monthly_play_stats_filters_to_requested_month() {
+        let temp = TempDir::new().expect("temp dir");
+        let source = create_fixture_file(&temp, "month-filter.mp4");
+        let library = MediaLibrary::new(temp.path().join("library"));
+
+        library.init().expect("init library");
+        let imported = library.import_video(&source).expect("import video");
+        let connection =
+            Connection::open(temp.path().join("library/app.db")).expect("open test db");
+        connection
+            .execute(
+                "
+                INSERT INTO video_play_stats (video_id, played_on, play_count)
+                VALUES (?1, '2026-03-31', 1), (?1, '2026-04-03', 2), (?1, '2026-05-01', 3)
+                ",
+                params![imported.id],
+            )
+            .expect("insert play stats");
+
+        let stats = library
+            .list_monthly_play_stats(2026, 4)
+            .expect("list april play stats");
+
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].date, "2026-04-03");
+        assert_eq!(stats[0].play_count, 2);
+    }
+
+    #[test]
+    fn deleting_video_removes_its_play_stats() {
+        let temp = TempDir::new().expect("temp dir");
+        let source = create_fixture_file(&temp, "watched-then-deleted.mp4");
+        let library = MediaLibrary::new(temp.path().join("library"));
+
+        library.init().expect("init library");
+        let imported = library.import_video(&source).expect("import video");
+        library
+            .record_video_play(&imported.id)
+            .expect("record play before delete");
+
+        library.delete_video(&imported.id).expect("delete video");
+
+        let (year, month) = library.current_year_month().expect("current month");
+        let stats = library
+            .list_monthly_play_stats(year, month)
+            .expect("list monthly play stats");
+        assert_eq!(stats.iter().map(|stat| stat.play_count).sum::<u64>(), 0);
     }
 
     #[test]
@@ -1153,9 +1373,7 @@ mod tests {
         assert!(settings.pause_on_blur);
         assert!(settings.lock_enabled);
 
-        let disabled = library
-            .disable_lock_password("1234")
-            .expect("disable lock");
+        let disabled = library.disable_lock_password("1234").expect("disable lock");
         assert!(!disabled.lock_enabled);
     }
 

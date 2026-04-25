@@ -3,6 +3,8 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
+  ChevronLeft,
+  ChevronRight,
   FolderOpen,
   Maximize,
   Minimize,
@@ -70,6 +72,7 @@ const {
   selectedVideoId,
   tags,
   videos,
+  monthlyPlayStats,
 } = storeToRefs(library);
 
 const SUPPORTED_EXTENSIONS = ["mp4", "mov", "webm", "m4v", "ogv"];
@@ -86,6 +89,15 @@ const TITLE_SAVE_DEBOUNCE_MS = 300;
 type ThemeMode = "light" | "dark";
 type ContextMenuMode = "default" | "rename";
 type ActiveView = "library" | "settings";
+type PlayCalendarDay = {
+  key: string;
+  dateKey: string;
+  day: number;
+  playCount: number;
+  level: number;
+  isCurrentMonth: boolean;
+  isToday: boolean;
+};
 type PendingDeleteEntry = {
   video: VideoItem;
   timeoutId: number;
@@ -125,6 +137,9 @@ const unlockInputRef = ref<HTMLInputElement | null>(null);
 const pendingResumeTime = ref<number | null>(null);
 const pendingAutoPlay = ref(false);
 const playbackIntent = ref<"idle" | "play">("idle");
+const pendingPlayCountId = ref<string | null>(null);
+const countedPlaybackId = ref<string | null>(null);
+const playCalendarMonth = ref(startOfMonth(new Date()));
 const unlockPassword = ref("");
 const pendingDeleteId = ref<string | null>(null);
 
@@ -212,6 +227,50 @@ const allFilteredVideosSelected = computed(
     filteredVideoIds.value.length > 0 &&
     filteredVideoIds.value.every((id) => multiSelectedIds.value.includes(id)),
 );
+const monthlyPlayTotal = computed(() =>
+  monthlyPlayStats.value.reduce((total, stat) => total + stat.playCount, 0),
+);
+const playCalendarTitle = computed(() => {
+  const month = playCalendarMonth.value;
+  return `${month.getFullYear()}年${month.getMonth() + 1}月`;
+});
+const isViewingCurrentPlayMonth = computed(
+  () =>
+    getMonthKey(playCalendarMonth.value) === getMonthKey(startOfMonth(new Date())),
+);
+const monthlyPlayCalendarDays = computed<PlayCalendarDay[]>(() => {
+  const statsByDate = new Map(
+    monthlyPlayStats.value.map((stat) => [stat.date, stat.playCount]),
+  );
+  const monthStart = playCalendarMonth.value;
+  const year = monthStart.getFullYear();
+  const month = monthStart.getMonth();
+  const firstDay = new Date(year, month, 1);
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const leadingBlankCount = firstDay.getDay();
+  const totalCells = Math.ceil((leadingBlankCount + daysInMonth) / 7) * 7;
+  const todayKey = formatDateKey(new Date());
+  const cells: PlayCalendarDay[] = [];
+
+  for (let index = 0; index < totalCells; index += 1) {
+    const date = new Date(year, month, 1 - leadingBlankCount + index);
+    const dateKey = formatDateKey(date);
+    const isCurrentMonth = date.getMonth() === month;
+    const playCount = isCurrentMonth ? (statsByDate.get(dateKey) ?? 0) : 0;
+    const level = isCurrentMonth ? getPlayHeatLevel(playCount) : 0;
+    cells.push({
+      key: dateKey,
+      dateKey,
+      day: date.getDate(),
+      playCount,
+      level,
+      isCurrentMonth,
+      isToday: dateKey === todayKey,
+    });
+  }
+
+  return cells;
+});
 
 const tagNameById = computed(() => {
   const lookup = new Map<string, string>();
@@ -300,12 +359,21 @@ watch(titleDraft, (nextTitle) => {
   }, TITLE_SAVE_DEBOUNCE_MS);
 });
 
+watch(playCalendarMonth, async (month) => {
+  if (!isUnlocked.value) {
+    return;
+  }
+
+  await refreshPlayCalendarStats(month);
+});
+
 watch(
   playback,
   async () => {
     progress.value = 0;
     duration.value = 0;
     isPlaying.value = false;
+    countedPlaybackId.value = null;
     pendingResumeTime.value = 0;
     pendingAutoPlay.value = playbackIntent.value === "play";
 
@@ -653,10 +721,12 @@ async function handleVideoRowKeydown(event: KeyboardEvent, video: VideoItem) {
 async function playVideo(video: VideoItem) {
   playbackIntent.value = "play";
   await library.loadPlayback(video.id);
+  pendingPlayCountId.value = playback.value?.id === video.id ? video.id : null;
 }
 
 async function loadVideoForPreview(videoId: string) {
   playbackIntent.value = "idle";
+  pendingPlayCountId.value = null;
   await library.loadPlayback(videoId);
 }
 
@@ -882,6 +952,8 @@ function togglePlayback() {
   }
 
   if (video.paused) {
+    playbackIntent.value = "play";
+    pendingPlayCountId.value = playback.value?.id ?? null;
     void video.play();
   } else {
     video.pause();
@@ -987,8 +1059,23 @@ function onLoadedMetadata() {
   video.playbackRate = playbackRate.value;
 }
 
-function onPlay() {
+async function onPlay() {
   isPlaying.value = true;
+  const playbackId = playback.value?.id;
+  if (
+    !playbackId ||
+    pendingPlayCountId.value !== playbackId ||
+    countedPlaybackId.value === playbackId
+  ) {
+    return;
+  }
+
+  countedPlaybackId.value = playbackId;
+  pendingPlayCountId.value = null;
+  await library.recordPlayback(playbackId);
+  if (isViewingCurrentPlayMonth.value) {
+    await refreshPlayCalendarStats(playCalendarMonth.value);
+  }
 }
 
 function onPause() {
@@ -1213,6 +1300,76 @@ function formatBytes(bytes: number) {
   return `${value.toFixed(exponent === 0 ? 0 : 1)} ${units[exponent]}`;
 }
 
+function formatPlayCount(count: number) {
+  return `${count} 次`;
+}
+
+function startOfMonth(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function addMonths(date: Date, offset: number) {
+  return new Date(date.getFullYear(), date.getMonth() + offset, 1);
+}
+
+function getMonthKey(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function getYearMonth(date: Date) {
+  return {
+    year: date.getFullYear(),
+    month: date.getMonth() + 1,
+  };
+}
+
+async function refreshPlayCalendarStats(month: Date) {
+  const { year, month: monthNumber } = getYearMonth(month);
+  await library.refreshMonthlyPlayStats(year, monthNumber);
+}
+
+function goToPreviousPlayMonth() {
+  playCalendarMonth.value = addMonths(playCalendarMonth.value, -1);
+}
+
+function goToNextPlayMonth() {
+  if (isViewingCurrentPlayMonth.value) {
+    return;
+  }
+
+  const nextMonth = addMonths(playCalendarMonth.value, 1);
+  playCalendarMonth.value =
+    getMonthKey(nextMonth) > getMonthKey(startOfMonth(new Date()))
+      ? startOfMonth(new Date())
+      : nextMonth;
+}
+
+function formatDateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getPlayHeatLevel(count: number) {
+  if (count >= 8) {
+    return 5;
+  }
+  if (count >= 5) {
+    return 4;
+  }
+  if (count >= 3) {
+    return 3;
+  }
+  if (count >= 2) {
+    return 2;
+  }
+  if (count >= 1) {
+    return 1;
+  }
+  return 0;
+}
+
 function getVideoTagNames(video: VideoItem) {
   return video.tagIds
     .map((tagId) => tagNameById.value.get(tagId))
@@ -1276,7 +1433,9 @@ function readVideoSort(): VideoSortOption {
     value === "created-desc" ||
     value === "created-asc" ||
     value === "title-asc" ||
-    value === "title-desc"
+    value === "title-desc" ||
+    value === "play-count-desc" ||
+    value === "play-count-asc"
   ) {
     return value;
   }
@@ -1711,8 +1870,85 @@ function resetActivePlayer() {
                           <option value="created-asc">添加时间：旧到新</option>
                           <option value="title-asc">标题：A-Z</option>
                           <option value="title-desc">标题：Z-A</option>
+                          <option value="play-count-desc">播放次数：高到低</option>
+                          <option value="play-count-asc">播放次数：低到高</option>
                         </select>
                       </label>
+                    </div>
+                  </section>
+
+                  <section class="mac-panel mt-3 p-3">
+                    <div class="play-calendar__header">
+                      <div>
+                        <p class="play-calendar__title">
+                          {{ playCalendarTitle }}
+                        </p>
+                        <p class="play-calendar__subtitle">
+                          {{ formatPlayCount(monthlyPlayTotal) }}
+                        </p>
+                      </div>
+                      <div class="play-calendar__nav">
+                        <button
+                          class="play-calendar__nav-button"
+                          title="上个月"
+                          aria-label="上个月"
+                          @click="goToPreviousPlayMonth"
+                        >
+                          <ChevronLeft :size="18" />
+                        </button>
+                        <button
+                          class="play-calendar__nav-button"
+                          :class="{ 'is-disabled': isViewingCurrentPlayMonth }"
+                          :disabled="isViewingCurrentPlayMonth"
+                          title="下个月"
+                          aria-label="下个月"
+                          @click="goToNextPlayMonth"
+                        >
+                          <ChevronRight :size="18" />
+                        </button>
+                      </div>
+                    </div>
+                    <div class="play-calendar mt-4">
+                      <div class="play-calendar__weekdays" aria-hidden="true">
+                        <span>日</span>
+                        <span>一</span>
+                        <span>二</span>
+                        <span>三</span>
+                        <span>四</span>
+                        <span>五</span>
+                        <span>六</span>
+                      </div>
+                      <div class="play-calendar__grid" aria-label="播放月历">
+                        <span
+                          v-for="day in monthlyPlayCalendarDays"
+                          :key="day.key"
+                          class="play-calendar__day"
+                          :class="[
+                            `play-calendar__day--level-${day.level}`,
+                            {
+                              'is-outside': !day.isCurrentMonth,
+                              'is-today': day.isToday,
+                            },
+                          ]"
+                          :aria-label="
+                            day.isCurrentMonth
+                              ? `${day.dateKey}，观看 ${day.playCount} 次`
+                              : undefined
+                          "
+                          :aria-hidden="day.isCurrentMonth ? undefined : true"
+                          :tabindex="day.isCurrentMonth ? 0 : undefined"
+                        >
+                          {{ day.day }}
+                          <span
+                            v-if="day.isCurrentMonth"
+                            class="play-calendar__tooltip"
+                            aria-hidden="true"
+                          >
+                            <span>{{ day.dateKey }}</span>
+                            <strong>观看 {{ day.playCount }} 次</strong>
+                          </span>
+                        </span>
+                      </div>
                     </div>
                   </section>
 
@@ -2092,6 +2328,9 @@ function resetActivePlayer() {
                           class="truncate text-xs text-[var(--text-muted)]"
                           >{{ formatBytes(video.fileSize) }}</span
                         >
+                        <span class="video-play-count">{{
+                          formatPlayCount(video.playCount)
+                        }}</span>
                         <button
                           v-if="!isSelectionMode"
                           class="mac-star"
@@ -2325,6 +2564,12 @@ function resetActivePlayer() {
                           <div class="mac-metric">
                             <span>格式</span>
                             <strong>{{ selectedVideo.mimeType }}</strong>
+                          </div>
+                          <div class="mac-metric">
+                            <span>播放次数</span>
+                            <strong>{{
+                              formatPlayCount(selectedVideo.playCount)
+                            }}</strong>
                           </div>
                         </div>
 

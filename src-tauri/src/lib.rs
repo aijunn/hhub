@@ -1,8 +1,8 @@
 mod media_library;
 
 use media_library::{
-    AppSettings, ImportResult, MediaLibrary, PlaybackInfo, TagItem, UpdateAppSettingsPayload,
-    UpdateVideoPayload, VideoFilter, VideoListItem,
+    AppSettings, DailyPlayStat, ImportResult, MediaLibrary, PlaybackInfo, TagItem,
+    UpdateAppSettingsPayload, UpdateVideoPayload, VideoFilter, VideoListItem,
 };
 use std::path::PathBuf;
 use tauri::{Manager, State};
@@ -78,6 +78,20 @@ fn get_playback_source(id: String, state: State<'_, AppState>) -> Result<Playbac
 }
 
 #[tauri::command]
+fn record_video_play(id: String, state: State<'_, AppState>) -> Result<VideoListItem, String> {
+    state.library.record_video_play(&id)
+}
+
+#[tauri::command]
+fn list_monthly_play_stats(
+    year: i64,
+    month: i64,
+    state: State<'_, AppState>,
+) -> Result<Vec<DailyPlayStat>, String> {
+    state.library.list_monthly_play_stats(year, month)
+}
+
+#[tauri::command]
 fn export_video(
     id: String,
     destination_path: String,
@@ -106,7 +120,10 @@ fn update_app_settings(
 }
 
 #[tauri::command]
-fn set_lock_password(new_password: String, state: State<'_, AppState>) -> Result<AppSettings, String> {
+fn set_lock_password(
+    new_password: String,
+    state: State<'_, AppState>,
+) -> Result<AppSettings, String> {
     state.library.set_lock_password(&new_password)
 }
 
@@ -122,7 +139,10 @@ fn change_lock_password(
 }
 
 #[tauri::command]
-fn disable_lock_password(password: String, state: State<'_, AppState>) -> Result<AppSettings, String> {
+fn disable_lock_password(
+    password: String,
+    state: State<'_, AppState>,
+) -> Result<AppSettings, String> {
     state.library.disable_lock_password(&password)
 }
 
@@ -194,6 +214,8 @@ pub fn run() {
             delete_tag,
             set_video_tags,
             get_playback_source,
+            record_video_play,
+            list_monthly_play_stats,
             export_video,
             read_clipboard_video_paths,
             get_app_settings,

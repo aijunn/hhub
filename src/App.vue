@@ -19,6 +19,7 @@ import {
   Search,
   Settings2,
   Share,
+  Shuffle,
   SkipBack,
   SkipForward,
   Square,
@@ -57,6 +58,7 @@ import {
 } from "./lib/library-multiselect";
 import { removeVideoTag } from "./lib/video-tags";
 import { resolvePostImportSelection } from "./lib/library-view-state";
+import { pickRandomVideo } from "./lib/random-video";
 import { sortVideos, type VideoSortOption } from "./lib/video-sort";
 import { getTagTheme } from "./lib/tag-theme";
 import type { AppSettings, VideoItem } from "./lib/types";
@@ -980,6 +982,22 @@ async function playRelative(offset: -1 | 1) {
   await playVideo(target);
 }
 
+async function playRandomVideo() {
+  const currentId = playback.value?.id ?? selectedVideoId.value;
+  const target = pickRandomVideo(filteredVideos.value, currentId);
+  if (!target) {
+    statusMessage.value = "当前列表没有可播放视频";
+    return;
+  }
+
+  if (isSelectionMode.value) {
+    exitSelectionMode();
+  }
+
+  statusMessage.value = "";
+  await playVideo(target);
+}
+
 async function toggleWindowFullscreen() {
   const wasPlaying = Boolean(
     getActiveVideoElement() && !getActiveVideoElement()!.paused,
@@ -1687,6 +1705,14 @@ function resetActivePlayer() {
                       @click="stopPlayback"
                     >
                       <Square :size="18" />
+                    </button>
+                    <button
+                      class="player-icon-button player-icon-button--ghost"
+                      title="随机播放"
+                      aria-label="随机播放"
+                      @click="playRandomVideo"
+                    >
+                      <Shuffle :size="18" />
                     </button>
                     <button
                       class="player-icon-button player-icon-button--ghost"
@@ -2434,6 +2460,14 @@ function resetActivePlayer() {
                           @click="stopPlayback"
                         >
                           <Square :size="16" />
+                        </button>
+                        <button
+                          class="player-icon-button"
+                          title="随机播放"
+                          aria-label="随机播放"
+                          @click="playRandomVideo"
+                        >
+                          <Shuffle :size="16" />
                         </button>
                         <button
                           class="player-icon-button"
